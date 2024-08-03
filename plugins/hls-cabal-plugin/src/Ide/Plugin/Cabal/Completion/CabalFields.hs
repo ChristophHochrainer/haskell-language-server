@@ -1,5 +1,9 @@
-module Ide.Plugin.Cabal.Completion.CabalFields (findStanzaForColumn, findFieldSection, getOptionalSectionName, getAnnotation, getFieldName, onelineSectionArgs) where
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+module Ide.Plugin.Cabal.Completion.CabalFields (findStanzaForColumn, findFieldSection, findTextWord, findFieldLine, getOptionalSectionName, getAnnotation, getFieldName, onelineSectionArgs, getFieldEndPosition, getSectionArgEndPosition, getNameEndPosition, getFieldLineEndPosition, getFieldLSPRange) where
 
+import qualified Data.ByteString                   as BS
+import qualified Data.ByteString.Internal          as BSI
+import           Data.List                         (find)
 import           Data.List.NonEmpty                (NonEmpty)
 import qualified Data.List.NonEmpty                as NE
 import qualified Data.Text                         as T
@@ -7,6 +11,7 @@ import qualified Data.Text.Encoding                as T
 import qualified Distribution.Fields               as Syntax
 import qualified Distribution.Parsec.Position      as Syntax
 import           Ide.Plugin.Cabal.Completion.Types
+import qualified Language.LSP.Protocol.Types       as LSPTypes
 
 -- ----------------------------------------------------------------
 -- Cabal-syntax utilities I don't really want to write myself
@@ -46,6 +51,72 @@ findFieldSection cursor (x:y:ys)
   where
     cursorLine = Syntax.positionRow cursor
 
+-- | Determine the field line the cursor is currently a part of.
+--
+-- The result is said field line and its starting position
+-- or Nothing if the passed list of fields is empty.
+
+-- This function assumes that elements in a field's @FieldLine@ list
+-- do not share the same row.
+findFieldLine :: Syntax.Position -> [Syntax.Field Syntax.Position] -> Maybe (Syntax.FieldLine Syntax.Position)
+findFieldLine _cursor [] = Nothing
+findFieldLine cursor fields =
+  case findFieldSection cursor fields of
+    Nothing -> Nothing
+    Just (Syntax.Field _ fieldLines) -> find filterLineFields fieldLines
+    Just (Syntax.Section _ _ fields) -> findFieldLine cursor fields
+  where
+    cursorLine = Syntax.positionRow cursor
+    -- In contrast to `Field` or `Section`, `FieldLine` must have the exact
+    -- same line position as the curser.
+    filterLineFields (Syntax.FieldLine pos _) = Syntax.positionRow pos == cursorLine
+
+-- | Determine the exact word at the current curser position.
+--
+-- The result is said word or Nothing if the passed list is empty
+-- or the curser position is not next to, or on a word.
+-- For this function, a word is a sequence of consecutive characters
+-- that are not a space or column.
+
+-- This function currently only considers words inside of a @FieldLine@.
+findTextWord :: Syntax.Position -> [Syntax.Field Syntax.Position] -> Maybe T.Text
+findTextWord _cursor [] = Nothing
+findTextWord cursor fields =
+  case findFieldLine cursor fields of
+    Nothing -> Nothing
+    Just (Syntax.FieldLine pos byteString) ->
+      -- we want to stay as long as possible in byte string form
+      -- to get out of the box support for complex characters.
+      let lineFieldCol = Syntax.positionCol pos
+          lineFieldLen = BS.length byteString
+          offset = cursorCol - lineFieldCol in
+      -- Range check if curser is inside or or next to found line.
+      -- The latter comparison includes the length of the line as offset,
+      -- which is done to also include cursors that are at the end of a line.
+      --    e.g. "foo,bar|"
+      --                 ^
+      --               curser
+      --
+      -- Having an offset which is outside of the line is possible because of `splitAt`.
+      if offset >= 0 && lineFieldLen >= offset
+        then
+          let (lhs, rhs) = BS.splitAt offset byteString
+              strippedLhs = BS.takeWhileEnd isAllowedByte lhs
+              strippedRhs = BS.takeWhile isAllowedByte rhs 
+              textWord = T.decodeUtf8 $ BS.concat [strippedLhs, strippedRhs] in
+          -- It could be possible that the curser was in-between separators, in this
+          -- case the resulting text would be empty, which should result in `Nothing`.
+          --    e.g. " foo ,| bar"
+          --                ^
+          --              curser
+          if not $ T.null textWord then Just textWord else Nothing
+        else
+          Nothing
+  where
+    cursorCol = Syntax.positionCol cursor
+    separators = map BSI.c2w [',', ' ']
+    isAllowedByte = (`notElem` separators)
+
 type FieldName = T.Text
 
 getAnnotation :: Syntax.Field ann -> ann
@@ -73,12 +144,42 @@ getOptionalSectionName (x:xs) = case x of
 --
 --   For example, @flag@ @(@ @pedantic@ @)@ will be joined in
 --   one line, instead of four @SectionArg@s separately.
-onelineSectionArgs :: [Syntax.SectionArg Syntax.Position] -> T.Text
+onelineSectionArgs :: [Syntax.SectionArg ann] -> T.Text
 onelineSectionArgs sectionArgs = joinedName
   where
     joinedName = T.unwords $ map getName sectionArgs
 
-    getName :: Syntax.SectionArg Syntax.Position -> T.Text
+    getName :: Syntax.SectionArg ann -> T.Text
     getName (Syntax.SecArgName _ identifier)  = T.decodeUtf8 identifier
     getName (Syntax.SecArgStr _ quotedString) = T.decodeUtf8 quotedString
     getName (Syntax.SecArgOther _ string)     = T.decodeUtf8 string
+
+
+-- | Returns the end position of a provided field
+getFieldEndPosition :: Syntax.Field Syntax.Position -> Syntax.Position
+getFieldEndPosition (Syntax.Field name [])       = getNameEndPosition name
+getFieldEndPosition (Syntax.Field _ (x:xs))      = getFieldLineEndPosition $ NE.last (x NE.:| xs)
+getFieldEndPosition (Syntax.Section name [] [])  = getNameEndPosition name
+getFieldEndPosition (Syntax.Section _ (x:xs) []) = getSectionArgEndPosition $ NE.last (x NE.:| xs)
+getFieldEndPosition (Syntax.Section _ _ (x:xs))  = getFieldEndPosition $ NE.last (x NE.:| xs)
+
+-- | Returns the end position of a provided section arg
+getSectionArgEndPosition :: Syntax.SectionArg Syntax.Position -> Syntax.Position
+getSectionArgEndPosition (Syntax.SecArgName (Syntax.Position row col) byteString)  = Syntax.Position row (col + BS.length byteString)
+getSectionArgEndPosition (Syntax.SecArgStr (Syntax.Position row col) byteString)   = Syntax.Position row (col + BS.length byteString)
+getSectionArgEndPosition (Syntax.SecArgOther (Syntax.Position row col) byteString) = Syntax.Position row (col + BS.length byteString)
+
+-- | Returns the end position of a provided name
+getNameEndPosition :: Syntax.Name Syntax.Position -> Syntax.Position
+getNameEndPosition (Syntax.Name (Syntax.Position row col) byteString) = Syntax.Position row (col + BS.length byteString)
+
+-- | Returns the end position of a provided field line
+getFieldLineEndPosition :: Syntax.FieldLine Syntax.Position -> Syntax.Position
+getFieldLineEndPosition (Syntax.FieldLine (Syntax.Position row col) byteString) = Syntax.Position row (col + BS.length byteString)
+
+-- | Returns a LSP compatible range for a provided field
+getFieldLSPRange :: Syntax.Field Syntax.Position -> LSPTypes.Range
+getFieldLSPRange field = LSPTypes.Range startLSPPos endLSPPos
+  where
+    startLSPPos = cabalPositionToLSPPosition $ getAnnotation field
+    endLSPPos   = cabalPositionToLSPPosition $ getFieldEndPosition field
