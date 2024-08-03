@@ -291,19 +291,19 @@ gotoDefinition :: PluginMethodHandler IdeState LSP.Method_TextDocumentDefinition
 gotoDefinition ideState _ msgParam = do
     case uriToFilePath' uri of
       Nothing ->
-        pure $ InL $ Definition $ InR []
+        pure $ InR $ InR Null
       Just filePath -> do
         mCabalFields <- liftIO $ runAction "cabal-plugin.commonSections" ideState $ use ParseCabalFields $ toNormalizedFilePath filePath
-        let mCurserText = CabalFields.findTextWord cursor =<< mCabalFields
-        case mCurserText of
+        let mCursorText = CabalFields.findTextWord cursor =<< mCabalFields
+        case mCursorText of
           Nothing ->
-            pure $ InL $ Definition $ InR []
-          Just curserText -> do
+            pure $ InR $ InR Null
+          Just cursorText -> do
             mCommonSections <- liftIO $ runAction "cabal-plugin.commonSections" ideState $ use ParseCabalCommonSections $ toNormalizedFilePath filePath
-            let mCommonSection = find (filterSectionArgName curserText) =<< mCommonSections
+            let mCommonSection = find (filterSectionArgName cursorText) =<< mCommonSections
             case mCommonSection of
               Nothing ->
-                pure $ InL $ Definition $ InR []
+                pure $ InR $ InR Null
               Just commonSection -> do
                 pure $ InL $ Definition $ InL $ Location uri $ CabalFields.getFieldLSPRange commonSection
     where

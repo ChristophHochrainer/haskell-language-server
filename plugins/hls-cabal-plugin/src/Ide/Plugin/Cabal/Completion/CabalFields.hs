@@ -67,13 +67,13 @@ findFieldLine cursor fields =
   where
     cursorLine = Syntax.positionRow cursor
     -- In contrast to `Field` or `Section`, `FieldLine` must have the exact
-    -- same line position as the curser.
+    -- same line position as the cursor.
     filterLineFields (Syntax.FieldLine pos _) = Syntax.positionRow pos == cursorLine
 
--- | Determine the exact word at the current curser position.
+-- | Determine the exact word at the current cursor position.
 --
 -- The result is said word or Nothing if the passed list is empty
--- or the curser position is not next to, or on a word.
+-- or the cursor position is not next to, or on a word.
 -- For this function, a word is a sequence of consecutive characters
 -- that are not a space or column.
 
@@ -88,12 +88,12 @@ findTextWord cursor fields =
           lineFieldCol = Syntax.positionCol pos
           lineFieldLen = T.length decodedText
           offset = cursorCol - lineFieldCol in
-      -- Range check if curser is inside or or next to found line.
+      -- Range check if cursor is inside or or next to found line.
       -- The latter comparison includes the length of the line as offset,
       -- which is done to also include cursors that are at the end of a line.
       --    e.g. "foo,bar|"
       --                 ^
-      --               curser
+      --               cursor
       --
       -- Having an offset which is outside of the line is possible because of `splitAt`.
       if offset >= 0 && lineFieldLen >= offset
@@ -102,11 +102,11 @@ findTextWord cursor fields =
               strippedLhs = T.takeWhileEnd isAllowedChar lhs
               strippedRhs = T.takeWhile isAllowedChar rhs
               resultText  = T.concat [strippedLhs, strippedRhs] in
-          -- It could be possible that the curser was in-between separators, in this
+          -- It could be possible that the cursor was in-between separators, in this
           -- case the resulting text would be empty, which should result in `Nothing`.
           --    e.g. " foo ,| bar"
           --                ^
-          --              curser
+          --              cursor
           if not $ T.null resultText then Just resultText else Nothing
         else
           Nothing
