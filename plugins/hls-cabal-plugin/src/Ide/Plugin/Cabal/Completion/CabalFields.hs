@@ -2,7 +2,6 @@
 module Ide.Plugin.Cabal.Completion.CabalFields (findStanzaForColumn, findFieldSection, findTextWord, findFieldLine, getOptionalSectionName, getAnnotation, getFieldName, onelineSectionArgs, getFieldEndPosition, getSectionArgEndPosition, getNameEndPosition, getFieldLineEndPosition, getFieldLSPRange) where
 
 import qualified Data.ByteString                   as BS
-import qualified Data.ByteString.Internal          as BSI
 import           Data.List                         (find)
 import           Data.List.NonEmpty                (NonEmpty)
 import qualified Data.List.NonEmpty                as NE
@@ -85,10 +84,9 @@ findTextWord cursor fields =
   case findFieldLine cursor fields of
     Nothing -> Nothing
     Just (Syntax.FieldLine pos byteString) ->
-      -- we want to stay as long as possible in byte string form
-      -- to get out of the box support for complex characters.
-      let lineFieldCol = Syntax.positionCol pos
-          lineFieldLen = BS.length byteString
+      let decodedText  = T.decodeUtf8 byteString
+          lineFieldCol = Syntax.positionCol pos
+          lineFieldLen = T.length decodedText
           offset = cursorCol - lineFieldCol in
       -- Range check if curser is inside or or next to found line.
       -- The latter comparison includes the length of the line as offset,
@@ -100,22 +98,22 @@ findTextWord cursor fields =
       -- Having an offset which is outside of the line is possible because of `splitAt`.
       if offset >= 0 && lineFieldLen >= offset
         then
-          let (lhs, rhs) = BS.splitAt offset byteString
-              strippedLhs = BS.takeWhileEnd isAllowedByte lhs
-              strippedRhs = BS.takeWhile isAllowedByte rhs 
-              textWord = T.decodeUtf8 $ BS.concat [strippedLhs, strippedRhs] in
+          let (lhs, rhs)  = T.splitAt offset decodedText
+              strippedLhs = T.takeWhileEnd isAllowedChar lhs
+              strippedRhs = T.takeWhile isAllowedChar rhs
+              resultText  = T.concat [strippedLhs, strippedRhs] in
           -- It could be possible that the curser was in-between separators, in this
           -- case the resulting text would be empty, which should result in `Nothing`.
           --    e.g. " foo ,| bar"
           --                ^
           --              curser
-          if not $ T.null textWord then Just textWord else Nothing
+          if not $ T.null resultText then Just resultText else Nothing
         else
           Nothing
   where
     cursorCol = Syntax.positionCol cursor
-    separators = map BSI.c2w [',', ' ']
-    isAllowedByte = (`notElem` separators)
+    separators = [',', ' ']
+    isAllowedChar = (`notElem` separators)
 
 type FieldName = T.Text
 
