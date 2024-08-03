@@ -61,7 +61,7 @@ findFieldLine :: Syntax.Position -> [Syntax.Field Syntax.Position] -> Maybe (Syn
 findFieldLine _cursor [] = Nothing
 findFieldLine cursor fields =
   case findFieldSection cursor fields of
-    Nothing -> Nothing
+    Nothing                          -> Nothing
     Just (Syntax.Field _ fieldLines) -> find filterLineFields fieldLines
     Just (Syntax.Section _ _ fields) -> findFieldLine cursor fields
   where
